@@ -24,4 +24,3 @@ setuptools.setup(
         'pyblake2'
     ]
 )
-

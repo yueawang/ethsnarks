@@ -208,4 +208,3 @@ class FQ(object):
 class FR(FQ):
     def __init__(self, n, field_modulus=FR_ORDER):
         FQ.__init__(self, n, field_modulus)
-
