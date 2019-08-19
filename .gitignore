@@ -15,3 +15,5 @@ __pycache__
 package-lock.json
 lextab.py
 yacctab.py
+dist/
+*.egg-info/
