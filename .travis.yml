@@ -1,22 +1,32 @@
 matrix:
   include:
-    # use the built in venv for linux builds
-    - os: linux
-      language: python
-      python: 3.6
-    - os: osx
-      language: cpp
-    - os: osx
-      language: cpp
-      osx_image: xcode10.2
+  - os: linux
+    language: python
+    python: 3.6
+  - os: osx
+    language: cpp
+  - os: osx
+    language: cpp
+    osx_image: xcode10.2
 install:
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then make mac-dependencies ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo apt-get update  ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo make ubuntu-dependencies ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]] || [[ "$TRAVIS_OS_NAME" == "linux" ]]; then nvm install --lts ; fi
-  - make PIP_ARGS= python-dependencies
+- if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then make mac-dependencies ; fi
+- if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo apt-get update  ; fi
+- if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then sudo make ubuntu-dependencies ; fi
+- if [[ "$TRAVIS_OS_NAME" == "osx" ]] || [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
+  nvm install --lts ; fi
+- make PIP_ARGS= python-dependencies
 script:
-  - make debug
-  - make test
+- make debug
+- make test
 after_success:
-  - make coverage
+- make coverage
+deploy:
+  provider: pypi
+  user: wanseob
+  password:
+    secure: ZeUBcmG/qrkPOX2L/wTXgVLsarmgIsediVJ6jLPo/aUr/VUP8Av2xNRW2hITeA2rQmxVWOnziQm9+6K/wceCmQlFzFnhlEWdc5ySwBWToUOtyBPo0VEblM8TC/vdO7qEdCvi/NevX1BrVSgh/Df4JmUBvuuLPmboKBx9j4Lt6yu4ImperE1v/sDzuONEsTGwUlXlnE7u6iTi+SiGRU4cXVY1pcjhgsogvEXb46FK6wj0mBYhoqufOu6CZ8AwjYNNaYHYkZdhh6tfLcOuKlQ+/KyJ5t2aXpFSG3OYMMBAxBFvlYurCd9jaqa4hNhxh+H9XgFtwyoja3GmYNsblKmGnYNivK2vF1fEz/ksM19swtDMDyx3E12+lFffoOTvqR4jhq2GQ/QIIQ+gmk51vXmpLyBZ/6Jn3LWVm63SKp3N2uLsxG687f/t3WBItvmrC2er5RuMEkgy5SG/0zPMo2ske3P0O4y3JmutugrvCzgb1tOEeQVciqgCHemtuetENV/f3nhXee0HN+uL5nZWypYHEuME/VNThgsRqxYwkEFZ+4WWCGaeiuxTtJJSrnfkBKPwQ+29a/6ansXPndBw6/Y4OAwKAAje2OHQXb6DmFwm1RPaa8lHDuVBSnCPBo4mNM3MltHURO44K/SHXAd3GXXvpCiM0zX24gEHPXkBjrmLIo4=
+  on:
+    tags: true
+    distributions: sdist bdist_wheel
+    repo: HarryR/ethsnarks
+    branch: master

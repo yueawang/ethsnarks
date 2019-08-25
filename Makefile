@@ -133,7 +133,6 @@ coverage-html:
 
 #######################################################################
 
-
 lint: python-pyflakes python-pylint cxx-lint solidity-lint
 
 python-pyflakes:
@@ -149,6 +148,10 @@ python-clean:
 cxx-lint:
 	cppcheck -I depends/libsnark/ -I depends/libsnark/depends/libff/ -I depends/libfqfft/ -I src/ --enable=all src/ || true
 
+python-deploy:
+	$(PYTHON) -m pip install -q --user --upgrade setuptools wheel twine
+	$(PYTHON) setup.py sdist bdist_wheel
+	$(PYTHON) -m twine upload dist/*
 
 #######################################################################
 
