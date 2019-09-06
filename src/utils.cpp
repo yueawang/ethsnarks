@@ -320,7 +320,7 @@ void print_bv( const char *prefix, const libff::bit_vector &vec )
     for (size_t i = 0; i < vec.size(); ++i)
     {
         std::cout << vec[i];
-        if( i > 0 && i % 7 == 0 ) {
+        if( i > 0 && i % 8 == 0 ) {
             std::cout << " ";
         }
     }
