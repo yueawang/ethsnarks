@@ -17,6 +17,7 @@ endif()
 add_subdirectory(r1cs_gg_ppzksnark_zok)
 add_subdirectory(gadgets)
 add_subdirectory(jubjub)
+add_subdirectory(powersoftau)
 
 if( NOT ${ETHSNARKS_DISABLE_PINOCCHIO} )
 	add_subdirectory(pinocchio)

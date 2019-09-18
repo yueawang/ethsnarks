@@ -14,6 +14,10 @@ typedef libff::alt_bn128_G1 G1T;
 typedef libff::alt_bn128_G2 G2T;
 typedef libff::alt_bn128_pp ppT;
 typedef libff::Fq<ppT> FqT;
+static const size_t FqT_size_bytes = sizeof(mp_limb_t) * FqT::num_limbs;
+static const size_t Fq2T_size_bytes = FqT_size_bytes * 2;
+
+typedef libff::alt_bn128_Fq2 Fq2T;
 typedef libff::Fr<ppT> FieldT;
 typedef libsnark::r1cs_constraint<FieldT> ConstraintT;
 typedef libsnark::protoboard<FieldT> ProtoboardT;
