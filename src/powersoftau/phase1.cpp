@@ -49,49 +49,59 @@ using ethsnarks::FqT;
 using ethsnarks::Fq2T;
 using ethsnarks::ppT;
 using ethsnarks::FqT_size_bytes;
+using libff::bigint;
 
 
-static void hash_Fq(blake2b_ctx &ctx, const FqT &field)
+template<long N>
+static void hash(blake2b_ctx &ctx, const bigint<N> &bi )
 {
-    const auto bi = field.as_bigint();
-    /*
-    // Points are stored in montgomery form internally
-    // Perform montgomery reduction before hashing
-    FqT tmp;
-    tmp.mont_repr.data[0] = 1;
-    tmp.mul_reduce(field.mont_repr);
-    */
-    blake2b_update(&ctx, bi.data, sizeof(mp_limb_t) * FqT::num_limbs);
+    mpz_t x;
+    mpz_init(x);
+    bi.to_mpz(x);
+
+    // XXX: Conversion to big-endian form
+    constexpr size_t count = sizeof(mp_limb_t) * N;
+    uint8_t output[count];
+    mpz_export(
+        output,             // rop
+        NULL,               // countp
+        1,                  // order
+        sizeof(mp_limb_t),  // size
+        1,                  // endian
+        0,                  // nails
+        x);                 // op
+
+    blake2b_update(&ctx, output, count);
 }
 
 
-static void hash_Fq2(blake2b_ctx &ctx, const Fq2T &field)
+template<typename H>
+static void hash(H &ctx, const FqT &field)
 {
-    hash_Fq(ctx, field.c0);
-    hash_Fq(ctx, field.c1);
+    hash(ctx, field.as_bigint());
 }
 
 
-static void hash_g1_uncompressed(blake2b_ctx &ctx, const G1T& point)
+template<typename H>
+static void hash(H &ctx, const Fq2T &field)
 {
-    G1T point_copy;
-	point_copy.to_affine_coordinates();
-	hash_Fq(ctx, point.X);
-	hash_Fq(ctx, point.Y);
+    hash(ctx, field.c0);
+    hash(ctx, field.c1);
 }
 
 
-static void hash_g2_uncompressed(blake2b_ctx &ctx, const G2T& point)
+template<typename H, typename T>
+static void hash_uncompressed(H &ctx, const T& point)
 {
-    G2T point_copy(point);
+    T point_copy;
     point_copy.to_affine_coordinates();
-    hash_Fq2(ctx, point.X);
-    hash_Fq2(ctx, point.Y);
+    hash(ctx, point.X);
+    hash(ctx, point.Y);
 }
 
 
 template<long N>
-static int cmp( const libff::bigint<N> &a, const libff::bigint<N> &b )
+static int cmp( const bigint<N> &a, const bigint<N> &b )
 {
     return mpn_cmp( a.data, b.data, N );
 }
@@ -118,7 +128,7 @@ static int cmp( const Fq2T &a, const Fq2T &b )
 
 
 template<long N>
-static bool test_and_clear_bit( libff::bigint<N> &bi, int bitno )
+static bool test_and_clear_bit( bigint<N> &bi, int bitno )
 {
     if( bitno >= (N * GMP_NUMB_BITS) ) {
         return false;
@@ -135,18 +145,18 @@ static bool test_and_clear_bit( libff::bigint<N> &bi, int bitno )
 }
 
 
-template<size_t R>
-static void rand_bigint( ChaChaRng<R> &rng, libff::bigint<FqT::num_limbs> &bi )
+template<typename R, long N>
+static void rand_bigint( R &rng, bigint<N> &bi )
 {
-    for( int i = 0; i < FqT::num_limbs; i++ ) {
+    for( int i = 0; i < N; i++ ) {
         bi.data[i] = rng.next_u64();            
     }
 }
 
 
 /** Computes a uniformly random element (in montgomery form) using rejection sampling. */
-template<size_t R>
-static void rand_field( ChaChaRng<R> &rng, FqT &out )
+template<typename R>
+static void rand_field( R &rng, FqT &out )
 {
     // Load random data directly into montgomery form, no reduction
     while( 1 ) {
@@ -166,8 +176,8 @@ static void rand_field( ChaChaRng<R> &rng, FqT &out )
 }
 
 
-template<size_t R>
-static void rand_field( ChaChaRng<R> &rng, Fq2T &out )
+template<typename R>
+static void rand_field( R &rng, Fq2T &out )
 {
     rand_field(rng, out.c0);
     rand_field(rng, out.c1);
@@ -183,7 +193,8 @@ static FqT norm( const Fq2T &a )
 }
 
 
-static int legendre( const FqT &a ) {
+static int legendre( const FqT &a )
+{
     // s = self^((MODULUS - 1) // 2)
     const auto s = a^FqT::euler;
     if( s.is_zero() ) {
@@ -267,15 +278,16 @@ static void scale_by_cofactor( G1T &point ) {
 }
 
 
-static void scale_by_cofactor( G2T &point ) {
+static void scale_by_cofactor( libff::alt_bn128_G2 &point ) {
     // cofactor for Fp2 = (2*q) - r
+    // XXX: need N+1 limbs for cofactor?
     static const decltype(Fq2T::euler) cofactor("21888242871839275222246405745257275088844257914179612981679871602714643921549");
     point = cofactor * point;
 }
 
 
-template<size_t R, typename T>
-static void rand_point( ChaChaRng<R> &rng, T &point )
+template<typename R, typename T>
+static void rand_point( R &rng, T &point )
 {
     point.Z = decltype(point.Z)::one();
     while( 1 )
@@ -290,7 +302,8 @@ static void rand_point( ChaChaRng<R> &rng, T &point )
 }
 
 
-ChaChaRng<20> rng_from_seed(const uint8_t *data)
+// TODO: specify size of data
+ChaChaRng<20> rng_from_seed( const uint8_t *data )
 {
     // hash_to_g2 in Rust parses seed as sequence of big-endian uint32_t ¯\_(ツ)_/¯
     mpz_t rop;
@@ -309,6 +322,7 @@ ChaChaRng<20> rng_from_seed(const uint8_t *data)
 }
 
 
+// TODO: specify size of data
 static void hash_to_g2(const uint8_t *data, G2T &point)
 {
     auto rng = rng_from_seed(data);
@@ -319,15 +333,15 @@ static void hash_to_g2(const uint8_t *data, G2T &point)
 
 /** Reads an n-limb big integer, in its standard form (without montgomery reduction) */
 template<long N>
-static const uint8_t* parse_bigint( const uint8_t *data, libff::bigint<N> &bi )
+static const uint8_t* parse_bigint( const uint8_t *data, bigint<N> &bi )
 {
     assert( data != nullptr );
     if( data != nullptr ) {
-        // XXX: slow conversion from big-endian form to little-end montgomery form
+        // XXX: slow conversion from big-endian form to little-end
         mpz_t rop;
         mpz_init(rop);
         mpz_import(rop, N, 1, sizeof(mp_limb_t), 1, 0, data);
-        bi = decltype(bi)(rop);
+        bi = bigint<N>(rop);
         return &data[FqT_size_bytes];
     }
     return nullptr;
@@ -337,13 +351,13 @@ static const uint8_t* parse_bigint( const uint8_t *data, libff::bigint<N> &bi )
 /** Parses a field element in its n-limb big integer form
 Then converts into montgomery form
 Field element is in big-endian form, so must be parsed using mpz_import */
-static const uint8_t* parse_FqT( const uint8_t *data, FqT &field )
+static const uint8_t* parse_field( const uint8_t *data, FqT &field )
 {
     assert( data != nullptr );
     if( data != nullptr ) {
-        libff::bigint<FqT::num_limbs> x;
+        bigint<FqT::num_limbs> x;
         data = parse_bigint(data, x);
-        field = FqT(x);
+        field = FqT(x); // XXX: slow conversion to montgomery form
     }
     return data;
 }
@@ -351,53 +365,40 @@ static const uint8_t* parse_FqT( const uint8_t *data, FqT &field )
 
 /** Parses a field element (converts into montgomery form)
 Coefficients are in big-endian form (c1, then c0) */
-static const uint8_t* parse_Fq2T( const uint8_t *data, Fq2T &field )
+static const uint8_t* parse_field( const uint8_t *data, Fq2T &field )
 {
     assert( data != nullptr );
     if( data != nullptr )
     {
-        data = parse_FqT(data, field.c1);
-        return parse_FqT(data, field.c0);
+        data = parse_field(data, field.c1);
+        return parse_field(data, field.c0);
     }
     return nullptr;
 }
 
 
 /** Parses an uncompressd G1 point (from its byte-representation in from memory) */
-static const uint8_t* parse_g1_uncompressed( const uint8_t *data, G1T &point )
+template<typename T>
+static const uint8_t* parse_point_uncompressed( const uint8_t *data, T &point )
 {
     assert( data != nullptr );
     if( data != nullptr ) {
-        data = parse_FqT(data, point.X);
-        data = parse_FqT(data, point.Y);
-        point.Z = FqT::one();
-    }
-    return data;
-}
-
-
-/** Parses an uncompressd G2 point (from its byte-representation in from memory) */
-static const uint8_t* parse_g2_uncompressed( const uint8_t *data, G2T &point )
-{
-    assert( data != nullptr );
-    if( data != nullptr )
-    {
-        data = parse_Fq2T(data, point.X);
-        data = parse_Fq2T(data, point.Y);
-        point.Z = Fq2T::one();
+        data = parse_field(data, point.X);
+        data = parse_field(data, point.Y);
+        point.Z = decltype(point.Z)::one();
     }
     return data;
 }
 
 
 /** Parses a compressd G1 point (from its byte-representation in from memory) */
-static const uint8_t* parse_g1_compressed( const uint8_t *data, G1T &point )
+static const uint8_t* parse_point_compressed( const uint8_t *data, G1T &point )
 {
     assert( data != nullptr );
     if( data == nullptr )
         return nullptr;
 
-    libff::bigint<FqT::num_limbs> bi;
+    bigint<FqT::num_limbs> bi;
     data = parse_bigint(data, bi);
     assert( data != nullptr );
 
@@ -412,45 +413,46 @@ static const uint8_t* parse_g1_compressed( const uint8_t *data, G1T &point )
         return data;
     }
 
-    point.X = FqT(bi);
     if( ! recover_y_from_x(point.X, point.Y, greatest) )
         return nullptr;
-    point.Z = FqT::one();
+    point.X = FqT(bi);  // XXX: slow conversion to montgomery form
+    point.Z = decltype(point.Z)::one();
 
     return data;
 }
 
 
 /** Parses an compressd G2 point (from its byte-representation in from memory) */
-static const uint8_t* parse_g2_compressed( const uint8_t *data, G2T &point )
+static const uint8_t* parse_point_compressed( const uint8_t *data, G2T &point )
 {
     assert( data != nullptr );
-    if( data != nullptr )
-    {
-        libff::bigint<FqT::num_limbs> c1;
-        libff::bigint<FqT::num_limbs> c0;
-        data = parse_bigint(data, c1);
-        data = parse_bigint(data, c0);
+    if( data == nullptr ) {
+        return nullptr;
+    }
 
-        const bool is_zero = test_and_clear_bit(c1, 254);
-        const bool greatest = test_and_clear_bit(c1, 255);
+    bigint<FqT::num_limbs> c1;
+    bigint<FqT::num_limbs> c0;
+    data = parse_bigint(data, c1);
+    data = parse_bigint(data, c0);
 
-        if( is_zero ) {
-            // Verify the remaining data is all zeros
-            for( int i = 0; i < FqT::num_limbs; i++ ) {
-                assert( c1.data[i] == 0 );
-                assert( c0.data[i] == 0 );
-            }
-            point = G2T::zero();
+    const bool is_zero = test_and_clear_bit(c1, 254);
+    const bool greatest = test_and_clear_bit(c1, 255);
+
+    if( is_zero ) {
+        // Verify the remaining data is all zeros
+        for( int i = 0; i < FqT::num_limbs; i++ ) {
+            assert( c1.data[i] == 0 );
+            assert( c0.data[i] == 0 );
         }
-        else {
-            const Fq2T X(c0, c1);
-            if( ! recover_y_from_x(X, point.Y, greatest) ) {
-                return nullptr;
-            }
-            point.Z = Fq2T::one();
-            point.X = X;
+        point = G2T::zero();
+    }
+    else {
+        const Fq2T X(c0, c1);   // XXX: slow conversion to montgomery form for each co-efficient
+        if( ! recover_y_from_x(X, point.Y, greatest) ) {
+            return nullptr;
         }
+        point.X = X;
+        point.Z = decltype(point.Z)::one();
     }
 
     return data;
@@ -462,7 +464,7 @@ Checks if pairs have the same ratio.
 Under the hood uses pairing to check
 x1/x2 = y1/y2 => x1*y2 = x2*y1
 */
-bool same_ratio(const G1T& a, const G1T& b, const G2T& c, const G2T& d)
+bool same_ratio( const G1T& a, const G1T& b, const G2T& c, const G2T& d )
 {
     const auto e = ppT::pairing(a, d);
     const auto f = ppT::pairing(b, c);
@@ -519,6 +521,9 @@ public:
                 ::perror("Could not unmap challenge file");
             }
             ::close(m_fd);
+            m_data = nullptr;
+            m_is_open = false;
+            m_fd = -1;
             return true;
         }
         return false;
@@ -542,7 +547,7 @@ public:
 
         if ( ! m_is_open )
         {
-            int flags = m_writeable ? O_RDWR|O_CREAT|O_TRUNC : O_RDONLY;
+            int flags = m_writeable ? (O_RDWR|O_CREAT|O_TRUNC) : O_RDONLY;
             int fd = ::open(m_filename.c_str(), O_RDONLY);
             if ( fd == -1 ) {
                 ::perror("Could not open challenge file");
@@ -605,13 +610,15 @@ const G2T compute_g2_s(const uint8_t digest[N], const G1T &g1_s, const G1T &g1_s
     blake2b_update(&ctx, &personalization, 1);
     blake2b_update(&ctx, digest, N);
 
-    hash_g1_uncompressed(ctx, g1_s);
-    hash_g1_uncompressed(ctx, g1_s_x);
+    hash_uncompressed(ctx, g1_s);
+    hash_uncompressed(ctx, g1_s_x);
 
     uint8_t output[N];
     blake2b_final(&ctx, output);
 
-    return hash_to_g2(output);
+    G2T result;
+    hash_to_g2(output, result);
+    return result;
 }
 
 
@@ -631,15 +638,16 @@ public:
     static PublicKey parse(const uint8_t *data)
     {
         PublicKey self;
-        data = parse_g1_compressed(data, self.tau_g1[0]);
-        data = parse_g1_compressed(data, self.tau_g1[1]);
-        data = parse_g1_compressed(data, self.alpha_g1[0]);
-        data = parse_g1_compressed(data, self.alpha_g1[1]);
-        data = parse_g1_compressed(data, self.beta_g1[0]);
-        data = parse_g1_compressed(data, self.beta_g1[1]);
-        data = parse_g2_uncompressed(data, self.tau_g2);
-        data = parse_g2_uncompressed(data, self.alpha_g2);
-        parse_g2_uncompressed(data, self.beta_g2);
+        data = parse_point_compressed(data, self.tau_g1[0]);
+        data = parse_point_compressed(data, self.tau_g1[1]);
+        data = parse_point_compressed(data, self.alpha_g1[0]);
+        data = parse_point_compressed(data, self.alpha_g1[1]);
+        data = parse_point_compressed(data, self.beta_g1[0]);
+        data = parse_point_compressed(data, self.beta_g1[1]);
+        data = parse_point_uncompressed(data, self.tau_g2);
+        data = parse_point_uncompressed(data, self.alpha_g2);
+        data = parse_point_uncompressed(data, self.beta_g2);
+        assert( data != nullptr );
         return self;
     }
 };
@@ -776,14 +784,14 @@ public:
         return m_handle.data();
     }
 
-    size_t g1_size(bool force_uncompressed = false) const {
+    size_t g1_size(const bool force_uncompressed = false) const {
         if( force_uncompressed ) {
             return G1_UNCOMPRESSED_BYTE_SIZE;
         }
         return m_is_compressed ? G1_COMPRESSED_BYTE_SIZE : G1_UNCOMPRESSED_BYTE_SIZE;
     }
 
-    size_t g2_size(bool force_uncompressed = false) const {
+    size_t g2_size(const bool force_uncompressed = false) const {
         if( force_uncompressed ) {
             return G2_UNCOMPRESSED_BYTE_SIZE;
         }
@@ -794,10 +802,10 @@ public:
     {
         assert( this->is_open() );
         if( ! force_uncompressed && this->m_is_compressed ) {
-            parse_g1_compressed(m_handle.data() + offset, point);
+            parse_point_compressed(m_handle.data() + offset, point);
         }
         else {
-            parse_g1_uncompressed(m_handle.data() + offset, point);
+            parse_point_uncompressed(m_handle.data() + offset, point);
         }
         return point.is_well_formed();
     }
@@ -806,15 +814,15 @@ public:
     {
         assert( this->is_open() );
         if( ! force_uncompressed && this->m_is_compressed ) {
-            parse_g2_compressed(m_handle.data() + offset, point);
+            parse_point_compressed(m_handle.data() + offset, point);
         }
         else {
-            parse_g2_uncompressed(m_handle.data() + offset, point);
+            parse_point_uncompressed(m_handle.data() + offset, point);
         }
         return point.is_well_formed();
     }
 
-    bool tauG1(size_t idx, G1T &point) const
+    bool tauG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_g1_count ) {
             return _parse_g1(tau_powers_g1_offset + (g1_size() * idx), point);
@@ -822,7 +830,7 @@ public:
         return false;
     }
 
-    bool tauG2(size_t idx, G2T &point) const
+    bool tauG2(const size_t idx, G2T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g2(tau_powers_g2_offset + (g2_size() * idx), point);
@@ -830,7 +838,7 @@ public:
         return false;
     }
 
-    bool alphaG1(size_t idx, G1T &point) const
+    bool alphaG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g1(alpha_tau_powers_g1_offset + (g1_size() * idx), point);
@@ -838,7 +846,7 @@ public:
         return false;
     }
 
-    bool betaG1(size_t idx, G1T &point) const
+    bool betaG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g1(beta_tau_powers_g1_offset + (g1_size() * idx), point);
@@ -870,6 +878,46 @@ static void print_hash(uint8_t *data, const char *line_prefix = "\t")
         printf("\n");
     }
 }
+
+
+void print(const G2T &p)
+{
+    // XXX: make affine?
+    const auto p_x_c0 = p.X.c0.as_bigint();
+    const auto p_x_c1 = p.X.c1.as_bigint();
+    const auto p_y_c0 = p.Y.c0.as_bigint();
+    const auto p_y_c1 = p.Y.c1.as_bigint();
+
+    gmp_printf("G2(x=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u), y=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u))",
+        p_x_c0.data, FqT::num_limbs,
+        p_x_c1.data, FqT::num_limbs,
+        p_y_c0.data, FqT::num_limbs,
+        p_y_c1.data, FqT::num_limbs);
+}
+
+
+void print(const G1T &p)
+{
+    // XXX: make affine?
+    const auto p_x = p.X.as_bigint();
+    const auto p_y = p.Y.as_bigint();
+    gmp_printf("G1(Fq(0x%064Nx), Fq(0x%064Nx))", p_x.data, FqT::num_limbs, p_y.data, FqT::num_limbs);
+}
+
+
+void _require( const char *filename, int line, const bool x, const char *msg = nullptr )
+{
+    assert( x );
+    if( ! x ) {
+        printf("Requirement failed on %s:%d\n", filename, line);
+        if( msg != nullptr ) {
+            printf("\t%s", msg);
+        }
+    }
+}
+
+
+#define REQUIRE(...) _require(__FILE__, __LINE__, __VA_ARGS__)
 
 
 static int cmd_print_challenge ( int n_powers, int argc, char **argv )
@@ -1029,26 +1077,26 @@ static int cmd_test ( int n_powers, int argc, char **argv )
     auto rng = rng_from_seed(digest);
 
     // Ensure seed is identical to rust implementation
-    assert(rng.key_word(0) == 16909060);
-    assert(rng.key_word(1) == 84281096);
-    assert(rng.key_word(2) == 151653132);
-    assert(rng.key_word(3) == 219025168);
-    assert(rng.key_word(4) == 286397204);
-    assert(rng.key_word(5) == 353769240);
-    assert(rng.key_word(6) == 421141276);
-    assert(rng.key_word(7) == 488513312);
+    REQUIRE(rng.key_word(0) == 16909060);
+    REQUIRE(rng.key_word(1) == 84281096);
+    REQUIRE(rng.key_word(2) == 151653132);
+    REQUIRE(rng.key_word(3) == 219025168);
+    REQUIRE(rng.key_word(4) == 286397204);
+    REQUIRE(rng.key_word(5) == 353769240);
+    REQUIRE(rng.key_word(6) == 421141276);
+    REQUIRE(rng.key_word(7) == 488513312);
 
     // Verify it generates bits in sequence
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 1 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 0 );
-    assert( rng.next_bit() == 1 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 1 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 0 );
+    REQUIRE( rng.next_bit() == 1 );
 
     // 10 random field elements (in montgomery form)
     for( int i = 0; i < 10; i++ ) {
@@ -1059,7 +1107,7 @@ static int cmd_test ( int n_powers, int argc, char **argv )
 
     // 10 random big-integers (FqRepr)
     for( int i = 0; i < 10; i++ ) {
-        libff::bigint<FqT::num_limbs> bi;
+        bigint<FqT::num_limbs> bi;
         rand_bigint(rng, bi);
         gmp_printf("FqRepr %d = 0x%064Nx\n", i, bi.data, FqT::num_limbs);
     }
@@ -1094,31 +1142,36 @@ static int cmd_test ( int n_powers, int argc, char **argv )
         p.to_affine_coordinates();
 
         printf("p2_%d = ", i);
-        const auto p_x_c0 = p.X.c0.as_bigint();
-        const auto p_x_c1 = p.X.c1.as_bigint();
-        const auto p_y_c0 = p.Y.c0.as_bigint();
-        const auto p_y_c1 = p.Y.c1.as_bigint();
-
-        gmp_printf("G2(x=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u), y=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u))\n",
-            p_x_c0.data, FqT::num_limbs,
-            p_x_c1.data, FqT::num_limbs,
-            p_y_c0.data, FqT::num_limbs,
-            p_y_c1.data, FqT::num_limbs);
+        print(p);
+        printf("\n");
     }
 
+    // Confirm that hash_to_g2 matches the expected value
     {
         G2T p;
+        printf("hash_to_g2: ");
         hash_to_g2(digest, p);
-        const auto p_x_c0 = p.X.c0.as_bigint();
-        const auto p_x_c1 = p.X.c1.as_bigint();
-        const auto p_y_c0 = p.Y.c0.as_bigint();
-        const auto p_y_c1 = p.Y.c1.as_bigint();
+        print(p);
+        printf("\n");
+    }
 
-        gmp_printf("G2(x=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u), y=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u))\n",
-                    p_x_c0.data, FqT::num_limbs,
-                    p_x_c1.data, FqT::num_limbs,
-                    p_y_c0.data, FqT::num_limbs,
-                    p_y_c1.data, FqT::num_limbs);
+    // Confirm compute_g2_s matches
+    {
+        G1T g1_s;
+        G1T g1_s_x;
+        rand_point(rng, g1_s);
+        rand_point(rng, g1_s_x);
+        printf("compute_g2_s g1_s: ");
+        print(g1_s);
+        printf("\n");
+        printf("compute_g2_s g1_s_x: ");
+        print(g1_s_x);
+        printf("\n");
+        uint8_t p = 1;
+        G2T x = compute_g2_s<32>(digest, g1_s, g1_s_x, p);
+        printf("compute_g2_s: ");
+        print(x);
+        printf("\n");
     }
     return 0;
 }
