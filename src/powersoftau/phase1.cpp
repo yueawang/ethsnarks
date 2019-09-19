@@ -52,6 +52,12 @@ using ethsnarks::FqT_size_bytes;
 using libff::bigint;
 
 
+constexpr size_t HASH_SIZE = 64;
+
+// TODO: use std::array
+typedef uint8_t digest_t[64];
+
+
 template<long N>
 static void hash(blake2b_ctx &ctx, const bigint<N> &bi )
 {
@@ -159,7 +165,8 @@ template<typename R>
 static void rand_field( R &rng, FqT &out )
 {
     // Load random data directly into montgomery form, no reduction
-    while( 1 ) {
+    while( 1 )
+    {
         rand_bigint(rng, out.mont_repr);
 
         const size_t REPR_SHAVE_BITS = (FqT::mod.max_bits() - FqT::mod.num_bits());
@@ -470,11 +477,23 @@ Checks if pairs have the same ratio.
 Under the hood uses pairing to check
 x1/x2 = y1/y2 => x1*y2 = x2*y1
 */
-bool same_ratio( const G1T& a, const G1T& b, const G2T& c, const G2T& d )
+bool same_ratio( const G1T& x1, const G1T& x2, const G2T& y1, const G2T& y2 )
 {
-    const auto e = ppT::pairing(a, d);
-    const auto f = ppT::pairing(b, c);
-    return e == f;
+    // g1.0.pairing_with(&g2.1) == g1.1.pairing_with(&g2.0)
+    const auto a = ppT::pairing(x1, y2);
+    const auto b = ppT::pairing(-x2, y1);
+    const auto c = a*b;
+    printf("a:");
+    a.print();
+    printf("\n");
+    printf("b:");
+    b.print();
+    printf("\n");
+    printf("c:");
+    c.print();
+    printf("\n");
+    return a == b;
+
 }
 
 
@@ -607,7 +626,6 @@ static const size_t G1_COMPRESSED_BYTE_SIZE = FqT_size_bytes;          // Y coor
 static const size_t G2_COMPRESSED_BYTE_SIZE = (FqT_size_bytes * 2);    // 
 
 
-
 enum ElementType {
     TauG1,
     TauG2,
@@ -618,10 +636,13 @@ enum ElementType {
 
 
 template<size_t N>
-const G2T compute_g2_s(const uint8_t digest[N], const G1T &g1_s, const G1T &g1_s_x, const uint8_t personalization)
+const G2T compute_g2_s(const uint8_t (&digest)[N], const G1T &g1_s, const G1T &g1_s_x, const uint8_t personalization)
 {
     blake2b_ctx ctx;
-    blake2b_init(&ctx, N, NULL, 0);
+    if( blake2b_init(&ctx, N, NULL, 0) != 0 ) {
+        assert(false);
+        return G2T::zero();
+    }
 
     blake2b_update(&ctx, &personalization, 1);
     blake2b_update(&ctx, digest, N);
@@ -638,9 +659,8 @@ const G2T compute_g2_s(const uint8_t digest[N], const G1T &g1_s, const G1T &g1_s
 }
 
 
-
 /** Displays a nicely formatted and easily readable hash */
-template<size_t N=64>
+template<size_t N=HASH_SIZE>
 static void print_hash(uint8_t *data, const char *line_prefix = "\t")
 {
     assert( N % 16 == 0 );
@@ -699,59 +719,64 @@ void _require( const char *filename, int line, const bool x, const char *msg = n
 #define REQUIRE(...) _require(__FILE__, __LINE__, __VA_ARGS__)
 
 
+class KeyRelation {
+public:
+    G1T g1_s;
+    G1T g1_s_x;
+    G2T g2_s_x;
+
+    /** Check proof of knowledge */
+    // g1^s / g1^(s*x) = g2^s / g2^(s*x)
+    template<size_t N>
+    bool verify( const uint8_t (&digest)[N], const uint8_t personalization )
+    {
+        const auto g2_s = compute_g2_s(digest, g1_s, g1_s_x, personalization);
+        return same_ratio(g1_s, g1_s_x, g2_s, g2_s_x);
+    }
+};
+
 
 class PublicKey {
 public:
-    G1T tau_g1[2];      // tau_g1_s, tau_g1_s_tau
-    G1T alpha_g1[2];    // alpha_g1_s, alpha_g1_s_tau
-    G1T beta_g1[2];     // beta_g1_s, beta_g1_s_tau
-    G2T tau_g2;
-    G2T alpha_g2;
-    G2T beta_g2;
+    KeyRelation tau;
+    KeyRelation alpha;
+    KeyRelation beta;
 
     static size_t size() {
         return (G1_UNCOMPRESSED_BYTE_SIZE*6) + (G2_UNCOMPRESSED_BYTE_SIZE*3);
     }
 
-    static bool parse(const uint8_t *data, PublicKey &self)
+    static bool parse( const uint8_t *data, PublicKey &self )
     {
-        data = parse_point_uncompressed(data, self.tau_g1[0]);
-        data = parse_point_uncompressed(data, self.tau_g1[1]);
-        data = parse_point_uncompressed(data, self.alpha_g1[0]);
-        data = parse_point_uncompressed(data, self.alpha_g1[1]);
-        data = parse_point_uncompressed(data, self.beta_g1[0]);
-        data = parse_point_uncompressed(data, self.beta_g1[1]);
-        data = parse_point_uncompressed(data, self.tau_g2);
-        data = parse_point_uncompressed(data, self.alpha_g2);
-        data = parse_point_uncompressed(data, self.beta_g2);
+        data = parse_point_uncompressed(data, self.tau.g1_s);
+        data = parse_point_uncompressed(data, self.tau.g1_s_x);
+        data = parse_point_uncompressed(data, self.alpha.g1_s);
+        data = parse_point_uncompressed(data, self.alpha.g1_s_x);
+        data = parse_point_uncompressed(data, self.beta.g1_s);
+        data = parse_point_uncompressed(data, self.beta.g1_s_x);
+        data = parse_point_uncompressed(data, self.tau.g2_s_x);
+        data = parse_point_uncompressed(data, self.alpha.g2_s_x);
+        data = parse_point_uncompressed(data, self.beta.g2_s_x);
         assert( data != nullptr );
         return data != nullptr;
     }
 
     /** Re-compute the G2 components deterministially */
-    bool verify(const uint8_t digest[64])
+    template<size_t N>
+    bool verify( const uint8_t (&digest)[N] )
     {
-        uint8_t zero = 0;
-        const auto recomputed_tau_g2 = compute_g2_s<32>(digest, tau_g1[0], tau_g1[1], 0);
-
-        uint8_t one = 1;
-        const auto recomputed_alpha_g2 = compute_g2_s<32>(digest, alpha_g1[0], alpha_g1[1], 1);
-
-        uint8_t two = 2;
-        const auto recomputed_beta_g2 = compute_g2_s<32>(digest, beta_g1[0], beta_g1[1], 2);
-
-        if( recomputed_tau_g2 != tau_g2 ) {
-            printf("Public Key Tau G2 mismatch!\n");
+        if( ! tau.verify(digest, 0) ) {
+            printf("Public Key Tau mismatch!\n");
             return false;
         }
 
-        if( recomputed_alpha_g2 != alpha_g2 ) {
-            printf("Public Key Alpha G2 mismatch!\n");
+        if( ! alpha.verify(digest, 1) ) {
+            printf("Public Key Alpha mismatch!\n");
             return false;
         }
 
-        if( recomputed_beta_g2 != beta_g2 ) {
-            printf("Beta G2 mismatch!\n");
+        if( ! beta.verify(digest, 2) ) {
+            printf("Public Key Beta mismatch!\n");
             return false;
         }
 
@@ -760,51 +785,37 @@ public:
 };
 
 
-static void print( const PublicKey &pk ) {
-    printf("\ttau_g1_s: ");
-    print(pk.tau_g1[0]);
+static void print( const KeyRelation &key )
+{
+    printf("\tg1_s: ");
+    print(key.g1_s);
     printf("\n");
 
-    printf("\ttau_g1_s_tau: ");
-    print(pk.tau_g1[1]);
+    printf("\tg1_s_x: ");
+    print(key.g1_s_x);
     printf("\n");
 
-    printf("\talpha_g1_s: ");
-    print(pk.alpha_g1[0]);
-    printf("\n");
+    printf("\tg2_s_x: ");
+    print(key.g2_s_x);
+    printf("\n\n");
+}
 
-    printf("\talpha_g1_s_tau: ");
-    print(pk.alpha_g1[1]);
-    printf("\n");
 
-    printf("\tbeta_g1_s: ");
-    print(pk.beta_g1[0]);
-    printf("\n");
+static void print( const PublicKey &pk )
+{
+    printf("Tau:\n");
+    print(pk.tau);
 
-    printf("\tbeta_g1_s_tau: ");
-    print(pk.beta_g1[1]);
-    printf("\n");
+    printf("Alpha:\n");
+    print(pk.alpha);
 
-    printf("\ttau_g2: ");
-    print(pk.tau_g2);
-    printf("\n");
-
-    printf("\talpha_g2: ");
-    print(pk.alpha_g2);
-    printf("\n");
-
-    printf("\tbeta_g2: ");
-    print(pk.beta_g2);
-    printf("\n");
+    printf("Beta:\n");
+    print(pk.beta);
 }
 
 
 class AccumulatorFile {
 public:
-    // Blake2b hash size
-    static const size_t HASH_SIZE = 64;
-
-protected:
     int m_npowers;
     bool m_is_writeable;
     bool m_is_compressed;
@@ -830,7 +841,6 @@ protected:
     size_t pubkey_size;
     size_t pubkey_end;
 
-public:
     AccumulatorFile(
         int npowers,
         const char *filename,
@@ -867,13 +877,16 @@ public:
         return m_with_pubkey;
     }
 
-    template<size_t N=HASH_SIZE>
-    const bool hash_to(uint8_t (&result)[N]) const
+    template<size_t N>
+    const bool hash_to( uint8_t (&result)[N] ) const
     {
         assert( this->is_open() );
         if( this->is_open() ) {
             blake2b_ctx ctx;
-            blake2b_init(&ctx, N, NULL, 0);
+            if( blake2b_init(&ctx, N, NULL, 0) != 0 ) {
+                assert(false);
+                return false;
+            }
             blake2b_update(&ctx, this->data(), this->m_handle.size());
             blake2b_final(&ctx, result);
             return true;
@@ -948,7 +961,8 @@ public:
         return m_is_compressed ? G2_COMPRESSED_BYTE_SIZE : G2_UNCOMPRESSED_BYTE_SIZE;
     }
 
-    bool _parse_g1(const size_t offset, G1T &point, bool force_uncompressed = false) const
+    template<typename T>
+    bool _parse_point( const size_t offset, T &point, const bool force_uncompressed = false ) const
     {
         assert( this->is_open() );
         const uint8_t *data;
@@ -962,21 +976,9 @@ public:
         return data != nullptr && point.is_well_formed();
     }
 
-    bool _parse_g2(const size_t offset, G2T &point, bool force_uncompressed = false) const
+    bool get_element( const ElementType t, const size_t idx, G1T& p ) const
     {
-        assert( this->is_open() );
-        const uint8_t *data;
-        if( ! force_uncompressed && this->m_is_compressed ) {
-            data = parse_point_compressed(m_handle.data() + offset, point);
-        }
-        else {
-            data = parse_point_uncompressed(m_handle.data() + offset, point);
-        }
-        assert( data != nullptr );
-        return data != nullptr && point.is_well_formed();
-    }
-
-    bool get_element( const ElementType t, const size_t idx, G1T& p ) const {
+        assert( t == ElementType::TauG1 || t == ElementType::AlphaG1 || t == ElementType::BetaG1 );
         switch( t ) {
         case ElementType::TauG1:
             return this->get_tauG1(idx, p);
@@ -985,11 +987,14 @@ public:
         case ElementType::BetaG1:
             return this->get_betaG1(idx, p);
         default:
+            assert( false );
             return false;
         }
     }
 
-    bool get_element( const ElementType t, const size_t idx, G2T& p ) const {
+    bool get_element( const ElementType t, const size_t idx, G2T& p ) const
+    {
+        assert( t == ElementType::TauG2 || t == ElementType::BetaG2 );
         switch( t ) {
         case ElementType::TauG2:
             return this->get_tauG2(idx, p);
@@ -1000,6 +1005,7 @@ public:
             }
             return false;
         default:
+            assert( false );
             return false;
         }
     }
@@ -1012,7 +1018,7 @@ public:
         return nullptr;
     }
 
-    bool get_hash(uint8_t (&output)[HASH_SIZE]) const
+    bool get_hash( uint8_t (&output)[HASH_SIZE] ) const
     {
         if( this->is_open() ) {
             memcpy(output, this->data(), HASH_SIZE);
@@ -1021,45 +1027,49 @@ public:
         return false;
     }
 
-    bool get_tauG1(const size_t idx, G1T &point) const
+    bool get_tauG1( const size_t idx, G1T &point ) const
     {
+        assert( idx < tau_powers_g1_count );
         if( idx < tau_powers_g1_count ) {
-            return _parse_g1(tau_powers_g1_offset + (g1_size() * idx), point);
+            return _parse_point(tau_powers_g1_offset + (g1_size() * idx), point);
         }
         return false;
     }
 
-    bool get_tauG2(const size_t idx, G2T &point) const
+    bool get_tauG2( const size_t idx, G2T &point ) const
     {
+        assert( idx < tau_powers_count );
         if( idx < tau_powers_count ) {
-            return _parse_g2(tau_powers_g2_offset + (g2_size() * idx), point);
+            return _parse_point(tau_powers_g2_offset + (g2_size() * idx), point);
         }
         return false;
     }
 
-    bool get_alphaG1(const size_t idx, G1T &point) const
+    bool get_alphaG1( const size_t idx, G1T &point ) const
     {
+        assert( idx < tau_powers_count );
         if( idx < tau_powers_count ) {
-            return _parse_g1(alpha_tau_powers_g1_offset + (g1_size() * idx), point);
+            return _parse_point(alpha_tau_powers_g1_offset + (g1_size() * idx), point);
         }
         return false;
     }
 
-    bool get_betaG1(const size_t idx, G1T &point) const
+    bool get_betaG1( const size_t idx, G1T &point ) const
     {
+        assert( idx < tau_powers_count );
         if( idx < tau_powers_count ) {
-            return _parse_g1(beta_tau_powers_g1_offset + (g1_size() * idx), point);
+            return _parse_point(beta_tau_powers_g1_offset + (g1_size() * idx), point);
         }
         return false;
     }
 
-    bool get_betaG2(G2T &point) const {
-        return _parse_g2(beta_g2_offset, point);
+    bool get_betaG2( G2T &point ) const {
+        return _parse_point(beta_g2_offset, point);
     }
 
-    bool get_pubkey(PublicKey& key) const
+    bool get_pubkey( PublicKey &key ) const
     {
-        if( m_with_pubkey ) {
+        if( this->is_open() && m_with_pubkey ) {
             const uint8_t *pkoffset = this->data() + this->pubkey_offset;
             return PublicKey::parse(pkoffset, key);
         }
@@ -1107,7 +1117,7 @@ static int cmd_print_challenge ( int n_powers, int argc, char **argv )
     }
 
     printf("Previous challenge hash:\n");
-    print_hash<challenge.HASH_SIZE>(challenge.data());
+    print_hash<HASH_SIZE>(challenge.data());
     printf("\n");
 
     printf("Tau G1\n");
@@ -1144,7 +1154,6 @@ static int cmd_print_response ( int n_powers, int argc, char **argv )
     }
 
     const char *response_filename = argv[0];
-
     printf("Response file: %s\n", response_filename);
 
     /*
@@ -1160,7 +1169,7 @@ static int cmd_print_response ( int n_powers, int argc, char **argv )
     }
 
     printf("Previous challenge hash:\n");
-    print_hash<response.HASH_SIZE>(response.data());
+    print_hash<HASH_SIZE>(response.data());
     printf("\n");
 
     printf("Tau G1\n");
@@ -1193,7 +1202,9 @@ static int cmd_print_response ( int n_powers, int argc, char **argv )
             printf("Error: while parsing public key!\n");
         }
         else {
-            if( ! pk.verify(response.data()) ) {
+            digest_t digest;
+            response.get_hash(digest);
+            if( ! pk.verify(digest) ) {
                 printf("Error: public key G2 computation invalid!\n");
             }
             print(pk);
@@ -1204,10 +1215,83 @@ static int cmd_print_response ( int n_powers, int argc, char **argv )
 }
 
 
-static bool verify_transform( AccumulatorFile *prev_response, AccumulatorFile *challenge, AccumulatorFile *response )
+template<typename T>
+static bool compare_elements( const AccumulatorFile *response, const AccumulatorFile *challenge, const ElementType t, size_t N )
 {
-    uint8_t challenge_hash[64];
-    uint8_t response_hash[64];
+    for( size_t i = 0; i < N; i++ )
+    {
+        T el_r;
+        T el_c;
+
+        if( ! response->get_element(t, i, el_r) ) {
+            printf("Failed to retrieve response element %zu of type %d\n", i, t);
+            return false;
+        }
+
+        if( ! challenge->get_element(t, i, el_c) ) {
+            printf("Failed to retrieve challenge element %zu of type %d\n", i, t);
+            return false;
+        }
+
+        if( el_r != el_c ) {
+            printf("Inequality for element %zu of type %d\n", i, t);
+            return false;
+        }
+    }
+    return true;
+}
+
+
+/**
+* Verify the transform from Response to Challenge
+* The challenge is the same as the response
+* However, the response includes the public key,
+* and the response points are compressed.
+* The points in the challenge are the uncompressed points
+*/
+static bool verify_challenge_from_response( const AccumulatorFile *prev_response, const AccumulatorFile *challenge )
+{
+    assert( prev_response->tau_powers_count == challenge->tau_powers_count );
+    assert( prev_response->tau_powers_g1_count == challenge->tau_powers_g1_count );
+
+    if( ! compare_elements<G1T>(prev_response, challenge, ElementType::TauG1, prev_response->tau_powers_g1_count) ) {
+        printf("Error: Tau G1 comparison failed\n");
+        return false;
+    }
+
+    if( ! compare_elements<G1T>(prev_response, challenge, ElementType::AlphaG1, prev_response->tau_powers_count) ) {
+        printf("Error: Alpha G1 comparison failed\n");
+        return false;
+    }
+
+    if( ! compare_elements<G1T>(prev_response, challenge, ElementType::BetaG1, prev_response->tau_powers_count) ) {
+        printf("Error: Beta G1 comparison failed\n");
+        return false;
+    }
+
+    if( ! compare_elements<G2T>(prev_response, challenge, ElementType::TauG2, prev_response->tau_powers_count) ) {
+        printf("Error: Tau G2 comparison failed\n");
+        return false;
+    }
+
+    if( ! compare_elements<G2T>(prev_response, challenge, ElementType::BetaG2, 1) ) {
+        printf("Error: Beta G2 comparison failed\n");
+        return false;
+    }
+
+    return true;
+}
+
+
+/**
+* Verify a transform, with optional previous and next responses
+*/
+static bool verify_transform( const AccumulatorFile *prev_response, const AccumulatorFile *challenge, const AccumulatorFile *response )
+{
+    assert( challenge != nullptr );
+
+    digest_t challenge_hash;
+    digest_t response_hash;
 
     challenge->hash_to(challenge_hash);
     printf("Challenge hash:\n");
@@ -1219,19 +1303,37 @@ static bool verify_transform( AccumulatorFile *prev_response, AccumulatorFile *c
     // If there is a previous response, verify continuity from it to the challenge
     if( prev_response )
     {
-        uint8_t prev_response_hash[64];
+        digest_t prev_response_hash;
         prev_response->hash_to(prev_response_hash);
-        if( memcmp(challenge->get_hash_ptr(), prev_response_hash, 64) != 0 ) {
+        if( memcmp(challenge->get_hash_ptr(), prev_response_hash, HASH_SIZE) != 0 ) {
             printf("Error: previous response hash doesn't match current challenge!");
-            return 1;
+            return false;
+        }
+
+        if( ! verify_challenge_from_response( prev_response, challenge ) ) {
+            printf("Error: challenge does not match response\n");
+            return false;
         }
     }
 
     // Verify that response matches previous challenge
-    if( response != NULL ) {
+    if( response != NULL )
+    {
         response->hash_to(response_hash);
         printf("Response hash:\n");
         print_hash(response_hash);
+
+        PublicKey pk;
+        if( ! response->get_pubkey(pk) ) {
+            printf("\tFailed to get public key!\n");
+            return false;
+        }
+        print(pk);
+
+        if( ! pk.verify(challenge_hash) ) {
+            printf("\tFailed to verify response public key\n");
+            //return false;
+        }
     }
 
     return true;
@@ -1250,7 +1352,6 @@ static int cmd_verify_transform ( int n_powers, int argc, char **argv )
     AccumulatorFile *challenge = nullptr;
 
     const int max_argc = argc + (argc%2);
-    printf("Max argc: %d\n", max_argc);
     for( int i = 0; i < max_argc; i += 2 )
     {
         const char *challenge_filename = argv[i];
@@ -1280,9 +1381,10 @@ static int cmd_verify_transform ( int n_powers, int argc, char **argv )
         }
 
         if( ! verify_transform(prev_response, challenge, response) ) {
-            printf("Error: Unable to verify transform\n");
+            printf("Error: Unable to verify transform for:\n");
             printf("       Challenge: %s\n", challenge_filename);
             printf("       Response: %s\n", response_filename);
+            break;
         }
 
         printf("\n-------------------------------------------\n\n");
