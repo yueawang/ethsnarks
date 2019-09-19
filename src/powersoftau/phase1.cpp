@@ -354,7 +354,8 @@ Field element is in big-endian form, so must be parsed using mpz_import */
 static const uint8_t* parse_field( const uint8_t *data, FqT &field )
 {
     assert( data != nullptr );
-    if( data != nullptr ) {
+    if( data != nullptr )
+    {
         bigint<FqT::num_limbs> x;
         data = parse_bigint(data, x);
         field = FqT(x); // XXX: slow conversion to montgomery form
@@ -382,7 +383,8 @@ template<typename T>
 static const uint8_t* parse_point_uncompressed( const uint8_t *data, T &point )
 {
     assert( data != nullptr );
-    if( data != nullptr ) {
+    if( data != nullptr )
+    {
         data = parse_field(data, point.X);
         data = parse_field(data, point.Y);
         point.Z = decltype(point.Z)::one();
@@ -401,6 +403,9 @@ static const uint8_t* parse_point_compressed( const uint8_t *data, G1T &point )
     bigint<FqT::num_limbs> bi;
     data = parse_bigint(data, bi);
     assert( data != nullptr );
+    if( data == nullptr ) {
+        return nullptr;
+    }
 
     const bool is_zero = test_and_clear_bit(bi, 254);
     const bool greatest = test_and_clear_bit(bi, 255);
@@ -413,9 +418,10 @@ static const uint8_t* parse_point_compressed( const uint8_t *data, G1T &point )
         return data;
     }
 
-    if( ! recover_y_from_x(point.X, point.Y, greatest) )
-        return nullptr;
     point.X = FqT(bi);  // XXX: slow conversion to montgomery form
+    if( ! recover_y_from_x(point.X, point.Y, greatest) ) {
+        return nullptr;
+    }
     point.Z = decltype(point.Z)::one();
 
     return data;
@@ -601,6 +607,16 @@ static const size_t G1_COMPRESSED_BYTE_SIZE = FqT_size_bytes;          // Y coor
 static const size_t G2_COMPRESSED_BYTE_SIZE = (FqT_size_bytes * 2);    // 
 
 
+
+enum ElementType {
+    TauG1,
+    TauG2,
+    AlphaG1,
+    BetaG1,
+    BetaG2
+};
+
+
 template<size_t N>
 const G2T compute_g2_s(const uint8_t digest[N], const G1T &g1_s, const G1T &g1_s_x, const uint8_t personalization)
 {
@@ -622,6 +638,68 @@ const G2T compute_g2_s(const uint8_t digest[N], const G1T &g1_s, const G1T &g1_s
 }
 
 
+
+/** Displays a nicely formatted and easily readable hash */
+template<size_t N=64>
+static void print_hash(uint8_t *data, const char *line_prefix = "\t")
+{
+    assert( N % 16 == 0 );
+    for ( size_t i = 0; i < N; i += 16 )
+    {
+        printf("%s", line_prefix);
+        for ( size_t j = i; j < (i+16); j++)
+        {
+            if ( j != i && (j%4) == 0 ) {
+                printf(" ");
+            }
+            printf("%02x", data[j]);
+        }
+        printf("\n");
+    }
+}
+
+
+void print(const G2T &p)
+{
+    // XXX: make affine?
+    const auto p_x_c0 = p.X.c0.as_bigint();
+    const auto p_x_c1 = p.X.c1.as_bigint();
+    const auto p_y_c0 = p.Y.c0.as_bigint();
+    const auto p_y_c1 = p.Y.c1.as_bigint();
+
+    gmp_printf("G2(x=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u), y=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u))",
+        p_x_c0.data, FqT::num_limbs,
+        p_x_c1.data, FqT::num_limbs,
+        p_y_c0.data, FqT::num_limbs,
+        p_y_c1.data, FqT::num_limbs);
+}
+
+
+void print(const G1T &p)
+{
+    // XXX: make affine?
+    const auto p_x = p.X.as_bigint();
+    const auto p_y = p.Y.as_bigint();
+    gmp_printf("G1(Fq(0x%064Nx), Fq(0x%064Nx))", p_x.data, FqT::num_limbs, p_y.data, FqT::num_limbs);
+}
+
+
+void _require( const char *filename, int line, const bool x, const char *msg = nullptr )
+{
+    assert( x );
+    if( ! x ) {
+        printf("Requirement failed on %s:%d\n", filename, line);
+        if( msg != nullptr ) {
+            printf("\t%s", msg);
+        }
+    }
+}
+
+
+#define REQUIRE(...) _require(__FILE__, __LINE__, __VA_ARGS__)
+
+
+
 class PublicKey {
 public:
     G1T tau_g1[2];      // tau_g1_s, tau_g1_s_tau
@@ -635,27 +713,94 @@ public:
         return (G1_UNCOMPRESSED_BYTE_SIZE*6) + (G2_UNCOMPRESSED_BYTE_SIZE*3);
     }
 
-    static PublicKey parse(const uint8_t *data)
+    static bool parse(const uint8_t *data, PublicKey &self)
     {
-        PublicKey self;
-        data = parse_point_compressed(data, self.tau_g1[0]);
-        data = parse_point_compressed(data, self.tau_g1[1]);
-        data = parse_point_compressed(data, self.alpha_g1[0]);
-        data = parse_point_compressed(data, self.alpha_g1[1]);
-        data = parse_point_compressed(data, self.beta_g1[0]);
-        data = parse_point_compressed(data, self.beta_g1[1]);
+        data = parse_point_uncompressed(data, self.tau_g1[0]);
+        data = parse_point_uncompressed(data, self.tau_g1[1]);
+        data = parse_point_uncompressed(data, self.alpha_g1[0]);
+        data = parse_point_uncompressed(data, self.alpha_g1[1]);
+        data = parse_point_uncompressed(data, self.beta_g1[0]);
+        data = parse_point_uncompressed(data, self.beta_g1[1]);
         data = parse_point_uncompressed(data, self.tau_g2);
         data = parse_point_uncompressed(data, self.alpha_g2);
         data = parse_point_uncompressed(data, self.beta_g2);
         assert( data != nullptr );
-        return self;
+        return data != nullptr;
+    }
+
+    /** Re-compute the G2 components deterministially */
+    bool verify(const uint8_t digest[64])
+    {
+        uint8_t zero = 0;
+        const auto recomputed_tau_g2 = compute_g2_s<32>(digest, tau_g1[0], tau_g1[1], 0);
+
+        uint8_t one = 1;
+        const auto recomputed_alpha_g2 = compute_g2_s<32>(digest, alpha_g1[0], alpha_g1[1], 1);
+
+        uint8_t two = 2;
+        const auto recomputed_beta_g2 = compute_g2_s<32>(digest, beta_g1[0], beta_g1[1], 2);
+
+        if( recomputed_tau_g2 != tau_g2 ) {
+            printf("Public Key Tau G2 mismatch!\n");
+            return false;
+        }
+
+        if( recomputed_alpha_g2 != alpha_g2 ) {
+            printf("Public Key Alpha G2 mismatch!\n");
+            return false;
+        }
+
+        if( recomputed_beta_g2 != beta_g2 ) {
+            printf("Beta G2 mismatch!\n");
+            return false;
+        }
+
+        return true;
     }
 };
 
 
+static void print( const PublicKey &pk ) {
+    printf("\ttau_g1_s: ");
+    print(pk.tau_g1[0]);
+    printf("\n");
+
+    printf("\ttau_g1_s_tau: ");
+    print(pk.tau_g1[1]);
+    printf("\n");
+
+    printf("\talpha_g1_s: ");
+    print(pk.alpha_g1[0]);
+    printf("\n");
+
+    printf("\talpha_g1_s_tau: ");
+    print(pk.alpha_g1[1]);
+    printf("\n");
+
+    printf("\tbeta_g1_s: ");
+    print(pk.beta_g1[0]);
+    printf("\n");
+
+    printf("\tbeta_g1_s_tau: ");
+    print(pk.beta_g1[1]);
+    printf("\n");
+
+    printf("\ttau_g2: ");
+    print(pk.tau_g2);
+    printf("\n");
+
+    printf("\talpha_g2: ");
+    print(pk.alpha_g2);
+    printf("\n");
+
+    printf("\tbeta_g2: ");
+    print(pk.beta_g2);
+    printf("\n");
+}
+
+
 class AccumulatorFile {
 public:
-
     // Blake2b hash size
     static const size_t HASH_SIZE = 64;
 
@@ -722,13 +867,18 @@ public:
         return m_with_pubkey;
     }
 
-    const void hash(const uint8_t *challenge, uint8_t result[HASH_SIZE]) const
+    template<size_t N=HASH_SIZE>
+    const bool hash_to(uint8_t (&result)[N]) const
     {
         assert( this->is_open() );
-        blake2b_ctx ctx;
-        blake2b_init(&ctx, HASH_SIZE, NULL, 0);
-        blake2b_update(&ctx, challenge, this->m_handle.size());
-        blake2b_final(&ctx, result);
+        if( this->is_open() ) {
+            blake2b_ctx ctx;
+            blake2b_init(&ctx, N, NULL, 0);
+            blake2b_update(&ctx, this->data(), this->m_handle.size());
+            blake2b_final(&ctx, result);
+            return true;
+        }
+        return false;
     }
 
     bool open()
@@ -801,28 +951,77 @@ public:
     bool _parse_g1(const size_t offset, G1T &point, bool force_uncompressed = false) const
     {
         assert( this->is_open() );
+        const uint8_t *data;
         if( ! force_uncompressed && this->m_is_compressed ) {
-            parse_point_compressed(m_handle.data() + offset, point);
+            data = parse_point_compressed(m_handle.data() + offset, point);
         }
         else {
-            parse_point_uncompressed(m_handle.data() + offset, point);
+            data = parse_point_uncompressed(m_handle.data() + offset, point);
         }
-        return point.is_well_formed();
+        assert( data != nullptr );
+        return data != nullptr && point.is_well_formed();
     }
 
     bool _parse_g2(const size_t offset, G2T &point, bool force_uncompressed = false) const
     {
         assert( this->is_open() );
+        const uint8_t *data;
         if( ! force_uncompressed && this->m_is_compressed ) {
-            parse_point_compressed(m_handle.data() + offset, point);
+            data = parse_point_compressed(m_handle.data() + offset, point);
         }
         else {
-            parse_point_uncompressed(m_handle.data() + offset, point);
+            data = parse_point_uncompressed(m_handle.data() + offset, point);
         }
-        return point.is_well_formed();
+        assert( data != nullptr );
+        return data != nullptr && point.is_well_formed();
     }
 
-    bool tauG1(const size_t idx, G1T &point) const
+    bool get_element( const ElementType t, const size_t idx, G1T& p ) const {
+        switch( t ) {
+        case ElementType::TauG1:
+            return this->get_tauG1(idx, p);
+        case ElementType::AlphaG1:
+            return this->get_alphaG1(idx, p);
+        case ElementType::BetaG1:
+            return this->get_betaG1(idx, p);
+        default:
+            return false;
+        }
+    }
+
+    bool get_element( const ElementType t, const size_t idx, G2T& p ) const {
+        switch( t ) {
+        case ElementType::TauG2:
+            return this->get_tauG2(idx, p);
+        case ElementType::BetaG2:
+            assert( idx == 0 );
+            if( idx == 0 ) {
+                return this->get_betaG2(p);
+            }
+            return false;
+        default:
+            return false;
+        }
+    }
+
+    uint8_t *get_hash_ptr() const
+    {
+        if( this->is_open() ) {
+            return this->data();
+        }
+        return nullptr;
+    }
+
+    bool get_hash(uint8_t (&output)[HASH_SIZE]) const
+    {
+        if( this->is_open() ) {
+            memcpy(output, this->data(), HASH_SIZE);
+            return true;
+        }
+        return false;
+    }
+
+    bool get_tauG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_g1_count ) {
             return _parse_g1(tau_powers_g1_offset + (g1_size() * idx), point);
@@ -830,7 +1029,7 @@ public:
         return false;
     }
 
-    bool tauG2(const size_t idx, G2T &point) const
+    bool get_tauG2(const size_t idx, G2T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g2(tau_powers_g2_offset + (g2_size() * idx), point);
@@ -838,7 +1037,7 @@ public:
         return false;
     }
 
-    bool alphaG1(const size_t idx, G1T &point) const
+    bool get_alphaG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g1(alpha_tau_powers_g1_offset + (g1_size() * idx), point);
@@ -846,7 +1045,7 @@ public:
         return false;
     }
 
-    bool betaG1(const size_t idx, G1T &point) const
+    bool get_betaG1(const size_t idx, G1T &point) const
     {
         if( idx < tau_powers_count ) {
             return _parse_g1(beta_tau_powers_g1_offset + (g1_size() * idx), point);
@@ -854,70 +1053,35 @@ public:
         return false;
     }
 
-    bool betaG2(G2T &point) const {
+    bool get_betaG2(G2T &point) const {
         return _parse_g2(beta_g2_offset, point);
+    }
+
+    bool get_pubkey(PublicKey& key) const
+    {
+        if( m_with_pubkey ) {
+            const uint8_t *pkoffset = this->data() + this->pubkey_offset;
+            return PublicKey::parse(pkoffset, key);
+        }
+        return false;
     }
 };
 
 
-/** Displays a nicely formatted and easily readable hash */
-template<size_t N>
-static void print_hash(uint8_t *data, const char *line_prefix = "\t")
+template<typename T>
+static void print_many_points( const ElementType t, const AccumulatorFile &acc, const size_t begin, const size_t end )
 {
-    assert( N % 16 == 0 );
-    for ( size_t i = 0; i < N; i += 16 )
-    {
-        printf("%s", line_prefix);
-        for ( size_t j = i; j < (i+16); j++)
-        {
-            if ( j != i && (j%4) == 0 ) {
-                printf(" ");
-            }
-            printf("%02x", data[j]);
+    T p;
+    for( size_t i = begin; i < end; i++ ) {
+        if( ! acc.get_element(t, i, p) ) {
+            printf("Failed to read point %zu\n", i);
+            continue;
         }
+        printf("%zu = ", i);
+        print(p);
         printf("\n");
     }
 }
-
-
-void print(const G2T &p)
-{
-    // XXX: make affine?
-    const auto p_x_c0 = p.X.c0.as_bigint();
-    const auto p_x_c1 = p.X.c1.as_bigint();
-    const auto p_y_c0 = p.Y.c0.as_bigint();
-    const auto p_y_c1 = p.Y.c1.as_bigint();
-
-    gmp_printf("G2(x=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u), y=Fq2(Fq(0x%064Nx) + Fq(0x%064Nx) * u))",
-        p_x_c0.data, FqT::num_limbs,
-        p_x_c1.data, FqT::num_limbs,
-        p_y_c0.data, FqT::num_limbs,
-        p_y_c1.data, FqT::num_limbs);
-}
-
-
-void print(const G1T &p)
-{
-    // XXX: make affine?
-    const auto p_x = p.X.as_bigint();
-    const auto p_y = p.Y.as_bigint();
-    gmp_printf("G1(Fq(0x%064Nx), Fq(0x%064Nx))", p_x.data, FqT::num_limbs, p_y.data, FqT::num_limbs);
-}
-
-
-void _require( const char *filename, int line, const bool x, const char *msg = nullptr )
-{
-    assert( x );
-    if( ! x ) {
-        printf("Requirement failed on %s:%d\n", filename, line);
-        if( msg != nullptr ) {
-            printf("\t%s", msg);
-        }
-    }
-}
-
-
-#define REQUIRE(...) _require(__FILE__, __LINE__, __VA_ARGS__)
 
 
 static int cmd_print_challenge ( int n_powers, int argc, char **argv )
@@ -928,7 +1092,6 @@ static int cmd_print_challenge ( int n_powers, int argc, char **argv )
     }
 
     const char *challenge_filename = argv[0];
-
     printf("Challenge file: %s\n", challenge_filename);
 
     /*
@@ -948,43 +1111,25 @@ static int cmd_print_challenge ( int n_powers, int argc, char **argv )
     printf("\n");
 
     printf("Tau G1\n");
-    G1T point[3];
-    for( int i = 0; i < 3; i++ ) {
-        challenge.tauG1(i, point[i]);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(TauG1, challenge, 0, 3);
     printf("\n");
 
     printf("Tau G2\n");
-    G2T point2[3];
-    for( int i = 0; i < 3; i++ ) {
-        challenge.tauG2(i, point2[i]);
-        point2[i].print();
-        printf("... %s\n", point2[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G2T>(TauG2, challenge, 0, 3);
     printf("\n");
 
     printf("Alpha G1\n");
-    for( int i = 0; i < 3; i++ ) {
-        challenge.alphaG1(i, point[i]);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(AlphaG1, challenge, 0, 3);
     printf("\n");
 
     printf("Beta G1\n");
-    for( int i = 0; i < 3; i++ ) {
-        challenge.betaG1(i, point[i]);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(BetaG1, challenge, 0, 3);
     printf("\n");
 
     printf("Beta G2\n");
-    challenge.betaG2(point2[0]);
-    point2[0].print();
-    printf("... %s\n", point2[0].is_well_formed() ? "well formed" : "invalid!" );
+    G2T point2;
+    challenge.get_betaG2(point2);
+    print(point2);
     printf("\n");
 
     return 0;
@@ -1019,45 +1164,154 @@ static int cmd_print_response ( int n_powers, int argc, char **argv )
     printf("\n");
 
     printf("Tau G1\n");
-    G1T point[20];
-    for( int i = 0; i < 20; i++ ) {
-        response.tauG1(i, point[i]);
-        printf("%d:\n", i);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(TauG1, response, 0, 20);
     printf("\n");
 
     printf("Tau G2\n");
-    G2T point2[3];
-    for( int i = 0; i < 3; i++ ) {
-        response.tauG2(i, point2[i]);
-        point2[i].print();
-        printf("... %s\n", point2[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G2T>(TauG2, response, 0, 20);
     printf("\n");
 
     printf("Alpha G1\n");
-    for( int i = 0; i < 3; i++ ) {
-        response.alphaG1(i, point[i]);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(AlphaG1, response, 0, 20);
     printf("\n");
 
     printf("Beta G1\n");
-    for( int i = 0; i < 3; i++ ) {
-        response.betaG1(i, point[i]);
-        point[i].print();
-        printf("... %s\n", point[i].is_well_formed() ? "well formed" : "invalid!" );
-    }
+    print_many_points<G1T>(BetaG1, response, 0, 20);
     printf("\n");
 
     printf("Beta G2\n");
-    response.betaG2(point2[0]);
-    point2[0].print();
-    printf("... %s\n", point2[0].is_well_formed() ? "well formed" : "invalid!" );
-    printf("\n");
+    G2T point2;
+    response.get_betaG2(point2);
+    print(point2);
+    printf("\n\n");
+
+    if ( response.has_pubkey() )
+    {
+        printf("Public Key:\n");
+        PublicKey pk;
+        if( ! response.get_pubkey(pk) ) {
+            printf("Error: while parsing public key!\n");
+        }
+        else {
+            if( ! pk.verify(response.data()) ) {
+                printf("Error: public key G2 computation invalid!\n");
+            }
+            print(pk);
+        }
+    }
+
+    return 0;
+}
+
+
+static bool verify_transform( AccumulatorFile *prev_response, AccumulatorFile *challenge, AccumulatorFile *response )
+{
+    uint8_t challenge_hash[64];
+    uint8_t response_hash[64];
+
+    challenge->hash_to(challenge_hash);
+    printf("Challenge hash:\n");
+    print_hash(challenge_hash);
+
+    printf("Previous response hash:\n");
+    print_hash(challenge->get_hash_ptr());
+
+    // If there is a previous response, verify continuity from it to the challenge
+    if( prev_response )
+    {
+        uint8_t prev_response_hash[64];
+        prev_response->hash_to(prev_response_hash);
+        if( memcmp(challenge->get_hash_ptr(), prev_response_hash, 64) != 0 ) {
+            printf("Error: previous response hash doesn't match current challenge!");
+            return 1;
+        }
+    }
+
+    // Verify that response matches previous challenge
+    if( response != NULL ) {
+        response->hash_to(response_hash);
+        printf("Response hash:\n");
+        print_hash(response_hash);
+    }
+
+    return true;
+}
+
+
+static int cmd_verify_transform ( int n_powers, int argc, char **argv )
+{
+    if( argc < 2 ) {
+        printf("Usage: ... verify-transform <challenge> <response> [challenge response [...]]\n");
+        return 1;
+    }
+
+    AccumulatorFile *prev_response = nullptr;
+    AccumulatorFile *response = nullptr;
+    AccumulatorFile *challenge = nullptr;
+
+    const int max_argc = argc + (argc%2);
+    printf("Max argc: %d\n", max_argc);
+    for( int i = 0; i < max_argc; i += 2 )
+    {
+        const char *challenge_filename = argv[i];
+        const char *response_filename = argv[i+1];
+
+        printf("Challenge file: %s\n", challenge_filename);
+
+        if( (i+1) < argc ) {
+            printf("Response file: %s\n", response_filename);
+        }
+
+        challenge = new AccumulatorFile(n_powers, challenge_filename, false, false, false);
+        if( ! challenge->open() ) {
+            printf("Error: unable to open challenge: %s\n", challenge_filename);
+            break;
+        }
+
+        // Allow the last response to be omitted
+        // This still verifies the challenge->response transform
+        if( i < (argc-1) || (i==(argc-1) && (argc%2)==0 ) )
+        {
+            response = new AccumulatorFile(n_powers, response_filename, false, true, true);
+            if( ! response->open() ) {
+                printf("Error: unable to open response: %s\n", response_filename);
+                break;
+            }
+        }
+
+        if( ! verify_transform(prev_response, challenge, response) ) {
+            printf("Error: Unable to verify transform\n");
+            printf("       Challenge: %s\n", challenge_filename);
+            printf("       Response: %s\n", response_filename);
+        }
+
+        printf("\n-------------------------------------------\n\n");
+
+        delete challenge;
+        challenge = nullptr;
+        if( prev_response ) {
+            delete prev_response;
+        }
+        prev_response = response;
+        if( response != nullptr ) {
+            response = nullptr;
+        }
+    }
+
+    if( challenge ) {
+        delete challenge;
+        challenge = nullptr;
+    }
+
+    if( response ) {
+        delete response;
+        response = nullptr;
+    }
+
+    if( prev_response ) {
+        delete prev_response;
+        prev_response = nullptr;
+    }
 
     return 0;
 }
@@ -1206,6 +1460,9 @@ int main( int argc, char **argv )
     }
     else if ( 0 == strcmp(arg_cmd, "print-response") ) {
         return cmd_print_response(n_powers, remaining_argc, remaining_argv);
+    }
+    else if ( 0 == strcmp(arg_cmd, "verify-transform") ) {
+        return cmd_verify_transform(n_powers, remaining_argc, remaining_argv);
     }
     else if ( 0 == strcmp(arg_cmd, "respond") ) {
         return cmd_respond(n_powers, remaining_argc, remaining_argv);
