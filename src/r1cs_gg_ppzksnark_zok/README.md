@@ -34,7 +34,7 @@ let x: G_1 computed from vk.gamma_ABC and inputs
 
 From https://eprint.iacr.org/2016/260.pdf §3.1 (pg14), the check is:
 ```
-vk.alpha_beta = e(A, B) * e(-x, vk.gamma) * e(C, vk.delta)
+vk.alpha_beta = e(A, B) * e(-x, vk.gamma) * e(-C, vk.delta)
 ```
 
 ## The issue running a Groth16 with the current precompiled contract
@@ -57,12 +57,12 @@ vk.alpha := alpha
 ```
 The verification then becomes:
 ```
-e(A, B) * e(-x, vk.gamma) * e(C, vk.delta) = e(alpha, beta)
+e(A, B) * e(-x, vk.gamma) * e(-C, vk.delta) = e(alpha, beta)
 ```
 
 Which is equivalent to:
 ```
-e(A, B) * e(-x, vk.gamma) * e(C, vk.delta) * e(-alpha, beta) = 1
+e(A, B) * e(-x, vk.gamma) * e(-C, vk.delta) * e(-alpha, beta) = 1
 ```
 
 Such a verification can be run using the available precompiled contract, at the expense of computing another pairing `e(-alpha, beta)`
@@ -74,7 +74,7 @@ vk := {minus_alpha: G_1, beta: G_2, gamma: G_2, delta: G_2, gamma_ABC: (G_1)^n}
 ```
 And the verification:
 ```
-e(A, B) * e(-x, vk.gamma) * e(C, vk.delta) * e(minus_alpha, beta) = 1
+e(A, B) * e(-x, vk.gamma) * e(-C, vk.delta) * e(minus_alpha, beta) = 1
 ```
 
 ## References
