@@ -235,7 +235,7 @@ class Point(AbstractCurveOps, namedtuple('_Point', ('x', 'y'))):
 		return hash((self.x, self.y))
 
 	def compress(self):
-		x = self.x.n
+		x = self.x
 		y = self.y.n
 		return int.to_bytes(y | (is_negative(x) << 255), 32, "little")
 
